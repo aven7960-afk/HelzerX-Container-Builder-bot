@@ -1,31 +1,38 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import Any
 
 
 @dataclass(slots=True)
 class ComponentSpec:
-    """Serializable description of one component in a builder session."""
+    """Serializable description of one Components V2 item."""
 
     type: str
     data: dict[str, Any] = field(default_factory=dict)
+    enabled: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": self.type, **self.data}
+        return {"type": self.type, "enabled": self.enabled, "data": self.data}
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ComponentSpec":
+        if not isinstance(raw, dict) or not isinstance(raw.get("type"), str):
+            raise ValueError("Each component must contain a string 'type'.")
+        data = raw.get("data", {})
+        if not isinstance(data, dict):
+            raise ValueError("Component 'data' must be an object.")
+        return cls(type=raw["type"], data=dict(data), enabled=bool(raw.get("enabled", True)))
 
 
 @dataclass(slots=True)
 class BuilderState:
-    """Mutable per-user builder state.
-
-    The state is intentionally framework-independent so it can later be saved
-    to SQLite and imported/exported as JSON without coupling persistence to UI.
-    """
-
     owner_id: int
-    accent_color: int | None = None
+    accent_color: int | None = 0x5865F2
     components: list[ComponentSpec] = field(default_factory=list)
+    name: str = "Untitled Container"
+    version: int = 2
 
     MAX_COMPONENTS = 40
 
@@ -39,25 +46,75 @@ class BuilderState:
         self.components.append(component)
         return True
 
+    def duplicate(self, index: int) -> bool:
+        if not 0 <= index < self.component_count or self.component_count >= self.MAX_COMPONENTS:
+            return False
+        original = self.components[index]
+        self.components.insert(index + 1, ComponentSpec(original.type, dict(original.data), original.enabled))
+        return True
+
     def remove(self, index: int) -> bool:
         if not 0 <= index < self.component_count:
             return False
         self.components.pop(index)
         return True
 
+    def update(self, index: int, data: dict[str, Any]) -> bool:
+        if not 0 <= index < self.component_count:
+            return False
+        self.components[index].data = dict(data)
+        return True
+
+    def toggle(self, index: int) -> bool:
+        if not 0 <= index < self.component_count:
+            return False
+        self.components[index].enabled = not self.components[index].enabled
+        return True
+
     def move(self, index: int, direction: int) -> bool:
         target = index + direction
         if not (0 <= index < self.component_count and 0 <= target < self.component_count):
             return False
-        self.components[index], self.components[target] = (
-            self.components[target],
-            self.components[index],
-        )
+        self.components[index], self.components[target] = self.components[target], self.components[index]
         return True
+
+    def clear(self) -> None:
+        self.components.clear()
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": self.version,
+            "name": self.name,
             "accent_color": self.accent_color,
             "components": [component.to_dict() for component in self.components],
         }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, owner_id: int, raw: dict[str, Any]) -> "BuilderState":
+        if not isinstance(raw, dict):
+            raise ValueError("Builder payload must be a JSON object.")
+        raw_components = raw.get("components", [])
+        if not isinstance(raw_components, list) or len(raw_components) > cls.MAX_COMPONENTS:
+            raise ValueError("Components must be a list with at most 40 items.")
+        accent = raw.get("accent_color", 0x5865F2)
+        if accent is not None and (not isinstance(accent, int) or not 0 <= accent <= 0xFFFFFF):
+            raise ValueError("accent_color must be a valid integer color.")
+        components = [ComponentSpec.from_dict(item) for item in raw_components]
+        return cls(
+            owner_id=owner_id,
+            accent_color=accent,
+            components=components,
+            name=str(raw.get("name", "Untitled Container"))[:100],
+            version=2,
+        )
+
+    @classmethod
+    def from_json(cls, owner_id: int, raw: str) -> "BuilderState":
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Invalid JSON.") from exc
+        return cls.from_dict(owner_id, payload)
