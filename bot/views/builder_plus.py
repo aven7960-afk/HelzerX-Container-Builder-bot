@@ -12,15 +12,6 @@ from bot.emoji import emoji
 from bot.storage import TemplateStore
 
 
-STYLE_MAP = {
-    "primary": discord.ButtonStyle.primary,
-    "secondary": discord.ButtonStyle.secondary,
-    "success": discord.ButtonStyle.success,
-    "danger": discord.ButtonStyle.danger,
-    "link": discord.ButtonStyle.link,
-}
-
-
 def icon(kind: str) -> str:
     return emoji(component_def(kind).icon)
 
@@ -53,8 +44,13 @@ class ComponentEditor(ui.Modal):
         self.owner = owner
         self.index = index
         spec = owner.state.components[index]
-        self.content = ui.TextInput(label="Component data JSON", style=discord.TextStyle.paragraph, required=True, max_length=4000,
-                                    default=json.dumps(spec.data, indent=2, ensure_ascii=False)[:4000])
+        self.content = ui.TextInput(
+            label="Component data JSON",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=4000,
+            default=json.dumps(spec.data, indent=2, ensure_ascii=False)[:4000],
+        )
         self.add_item(self.content)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -65,7 +61,8 @@ class ComponentEditor(ui.Modal):
         except ValueError:
             await interaction.response.send_message(f"{emoji('ERROR')} Invalid JSON object.", ephemeral=True)
             return
-        self.owner.state.components[self.index].data = data
+        self.owner.state.update(self.index, data)
+        self.owner._build()
         await interaction.response.edit_message(view=self.owner)
 
 
@@ -73,9 +70,14 @@ class IndexSelect(ui.Select):
     def __init__(self, owner: "BuilderPlusView", action: str, placeholder: str):
         self.owner = owner
         self.action_name = action
-        options = []
-        for i, item in enumerate(owner.state.components[:25]):
-            options.append(discord.SelectOption(label=f"#{i + 1} {item.type.title()}", value=str(i), description=("Enabled" if item.enabled else "Disabled")))
+        options = [
+            discord.SelectOption(
+                label=f"#{i + 1} {item.type.replace('_', ' ').title()}",
+                value=str(i),
+                description="Enabled" if item.enabled else "Disabled",
+            )
+            for i, item in enumerate(owner.state.components[:25])
+        ]
         super().__init__(placeholder=placeholder, options=options or [discord.SelectOption(label="No components", value="-1")])
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -89,9 +91,12 @@ class IndexSelect(ui.Select):
         if self.action_name == "remove":
             self.owner.state.remove(index)
         elif self.action_name == "duplicate":
-            self.owner.state.duplicate(index)
+            if not self.owner.state.duplicate(index):
+                await interaction.response.send_message(f"{emoji('ERROR')} Component limit reached (40).", ephemeral=True)
+                return
         elif self.action_name == "toggle":
             self.owner.state.toggle(index)
+        self.owner._build()
         await interaction.response.edit_message(view=self.owner)
 
 
@@ -112,11 +117,10 @@ class BuilderPlusView(ui.LayoutView):
     def _component_summary(self) -> str:
         if not self.state.components:
             return f"*{emoji('WARNING')} Empty container — use **Add Component** to begin.*"
-        lines = []
-        for i, item in enumerate(self.state.components, 1):
-            status = "" if item.enabled else " ~~disabled~~"
-            lines.append(f"`{i:02}` {icon(item.type)} **{item.type.replace('_', ' ').title()}**{status}")
-        return "\n".join(lines)
+        return "\n".join(
+            f"`{i:02}` {icon(item.type)} **{item.type.replace('_', ' ').title()}**" + ("" if item.enabled else " ~~disabled~~")
+            for i, item in enumerate(self.state.components, 1)
+        )
 
     def _build(self) -> None:
         self.clear_items()
@@ -124,16 +128,18 @@ class BuilderPlusView(ui.LayoutView):
         container = ui.Container(accent_color=discord.Colour(accent) if accent is not None else None)
         container.add_item(ui.TextDisplay(f"# {emoji('BUILDER')} HelzerX Container Builder **V2**\n-# Build Discord Components V2 layouts directly inside Discord."))
         container.add_item(ui.Separator())
-        container.add_item(ui.TextDisplay(f"### {emoji('PREVIEW')} Live Preview\n**{self.state.name}** · Components **{self.state.component_count}/{self.state.MAX_COMPONENTS}** · Accent `{('#%06X' % accent) if accent is not None else 'None'}`"))
+        container.add_item(ui.TextDisplay(
+            f"### {emoji('PREVIEW')} Live Preview\n**{self.state.name}** · Components **{self.state.component_count}/{self.state.MAX_COMPONENTS}** · Accent `{('#%06X' % accent) if accent is not None else 'None'}`"
+        ))
         container.add_item(ui.TextDisplay(self._component_summary()))
 
-        add = ui.Select(placeholder=f"{emoji('ADD')} Add a component...", options=[
-            discord.SelectOption(label=d.label, value=d.key, description=d.description, emoji=icon(d.key)) for d in COMPONENTS
-        ])
+        add = ui.Select(
+            placeholder=f"{emoji('ADD')} Add a component...",
+            options=[discord.SelectOption(label=d.label, value=d.key, description=d.description, emoji=icon(d.key)) for d in COMPONENTS],
+        )
         async def add_callback(interaction: discord.Interaction) -> None:
-            kind = add.values[0]
-            definition = component_def(kind)
-            if not self.state.add(ComponentSpec(kind, json.loads(json.dumps(definition.default)))):
+            definition = component_def(add.values[0])
+            if not self.state.add(ComponentSpec(definition.key, json.loads(json.dumps(definition.default)))):
                 await interaction.response.send_message(f"{emoji('ERROR')} Component limit reached (40).", ephemeral=True)
                 return
             self._build()
@@ -143,10 +149,10 @@ class BuilderPlusView(ui.LayoutView):
 
         controls = ui.ActionRow(
             ui.Button(label="Edit", emoji=emoji("EDIT"), style=discord.ButtonStyle.secondary, custom_id="hx:edit"),
-            ui.Button(label="Duplicate", emoji="📑", style=discord.ButtonStyle.secondary, custom_id="hx:duplicate"),
+            ui.Button(label="Duplicate", emoji=emoji("DUPLICATE"), style=discord.ButtonStyle.secondary, custom_id="hx:duplicate"),
             ui.Button(label="Remove", emoji=emoji("REMOVE"), style=discord.ButtonStyle.danger, custom_id="hx:remove"),
             ui.Button(label="Reorder", emoji=emoji("REORDER"), style=discord.ButtonStyle.secondary, custom_id="hx:reorder"),
-            ui.Button(label="More", emoji="☰", style=discord.ButtonStyle.secondary, custom_id="hx:more"),
+            ui.Button(label="More", emoji=emoji("SETTINGS"), style=discord.ButtonStyle.secondary, custom_id="hx:more"),
         )
         for child in controls.children:
             child.callback = self._control
@@ -157,26 +163,29 @@ class BuilderPlusView(ui.LayoutView):
         action = str(interaction.data.get("custom_id", "")).split(":")[-1]
         if action in {"edit", "duplicate", "remove", "toggle"}:
             view = ui.LayoutView(timeout=120)
-            box = ui.Container(ui.TextDisplay(f"### Select a component to {action}"), IndexSelect(self, action, f"Choose component to {action}"))
+            box = ui.Container(ui.TextDisplay(f"### Select a component to {action}"), ui.ActionRow(IndexSelect(self, action, f"Choose component to {action}")))
             view.add_item(box)
             await interaction.response.send_message(view=view, ephemeral=True)
             return
         if action == "reorder":
             view = ui.LayoutView(timeout=120)
-            select = IndexSelect(self, "move", "Choose a component to move")
+            select = IndexSelect(self, "move", "Choose a component to move down")
             async def move_callback(i: discord.Interaction) -> None:
                 index = int(select.values[0])
-                self.state.move(index, 1)
+                if index < 0 or not self.state.move(index, 1):
+                    await i.response.send_message(f"{emoji('WARNING')} That item is already last.", ephemeral=True)
+                    return
                 self._build()
                 await i.response.edit_message(view=self)
             select.callback = move_callback
-            view.add_item(ui.Container(ui.TextDisplay("### Reorder\nSelect an item; it moves down one position."), select))
+            view.add_item(ui.Container(ui.TextDisplay("### Reorder\nSelect an item to move it down one position."), ui.ActionRow(select)))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
-        await interaction.response.send_message(f"{emoji('SETTINGS')} Use the **More** menu for color, JSON, templates and reset.", ephemeral=True)
+        if action == "more":
+            await self.open_more(interaction)
 
     async def open_more(self, interaction: discord.Interaction) -> None:
-        pass
+        await interaction.response.send_message(view=MoreView(self), ephemeral=True)
 
 
 class MoreView(ui.LayoutView):
@@ -208,9 +217,10 @@ class MoreView(ui.LayoutView):
         elif action == "color":
             async def done(i, value):
                 try:
-                    self.builder.state.accent_color = int(value.strip().lstrip("#"), 16)
-                    if not 0 <= self.builder.state.accent_color <= 0xFFFFFF:
+                    color = int(value.strip().lstrip("#"), 16)
+                    if not 0 <= color <= 0xFFFFFF:
                         raise ValueError
+                    self.builder.state.accent_color = color
                 except ValueError:
                     await i.response.send_message(f"{emoji('ERROR')} Use a valid hex color such as `5865F2`.", ephemeral=True)
                     return
@@ -225,8 +235,12 @@ class MoreView(ui.LayoutView):
             await interaction.response.send_modal(JsonModal(self._import))
         elif action == "save":
             async def done(i, value):
-                self.builder.store.save(self.builder.owner_id, value.strip()[:50], self.builder.state)
-                await i.response.send_message(f"{emoji('SUCCESS')} Template saved as **{value.strip()[:50]}**.", ephemeral=True)
+                name = value.strip()[:50]
+                if not name:
+                    await i.response.send_message(f"{emoji('ERROR')} Template name cannot be empty.", ephemeral=True)
+                    return
+                self.builder.store.save(self.builder.owner_id, name, self.builder.state)
+                await i.response.send_message(f"{emoji('SUCCESS')} Template saved as **{name}**.", ephemeral=True)
             await interaction.response.send_modal(TextModal("Save Template", "Template name", self.builder.state.name, done))
         elif action == "load":
             names = self.builder.store.names(self.builder.owner_id)[:25]
@@ -240,6 +254,8 @@ class MoreView(ui.LayoutView):
                     self.builder.state = BuilderState.from_dict(self.builder.owner_id, payload)
                     self.builder._build()
                     await i.response.edit_message(view=self.builder)
+                else:
+                    await i.response.send_message(f"{emoji('ERROR')} Template no longer exists.", ephemeral=True)
             select.callback = load_callback
             v = ui.LayoutView(timeout=120)
             v.add_item(ui.Container(ui.TextDisplay("### Load Template"), ui.ActionRow(select)))
