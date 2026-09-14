@@ -7,6 +7,7 @@ import discord
 from discord import ui
 
 from bot.builder.catalog import COMPONENTS, component_def
+from bot.builder.renderer import RenderedComponentsView
 from bot.builder.state import BuilderState, ComponentSpec
 from bot.emoji import emoji
 from bot.storage import TemplateStore
@@ -44,13 +45,7 @@ class ComponentEditor(ui.Modal):
         self.owner = owner
         self.index = index
         spec = owner.state.components[index]
-        self.content = ui.TextInput(
-            label="Component data JSON",
-            style=discord.TextStyle.paragraph,
-            required=True,
-            max_length=4000,
-            default=json.dumps(spec.data, indent=2, ensure_ascii=False)[:4000],
-        )
+        self.content = ui.TextInput(label="Component data JSON", style=discord.TextStyle.paragraph, required=True, max_length=4000, default=json.dumps(spec.data, indent=2, ensure_ascii=False)[:4000])
         self.add_item(self.content)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -70,14 +65,7 @@ class IndexSelect(ui.Select):
     def __init__(self, owner: "BuilderPlusView", action: str, placeholder: str):
         self.owner = owner
         self.action_name = action
-        options = [
-            discord.SelectOption(
-                label=f"#{i + 1} {item.type.replace('_', ' ').title()}",
-                value=str(i),
-                description="Enabled" if item.enabled else "Disabled",
-            )
-            for i, item in enumerate(owner.state.components[:25])
-        ]
+        options = [discord.SelectOption(label=f"#{i + 1} {item.type.replace('_', ' ').title()}", value=str(i), description="Enabled" if item.enabled else "Disabled") for i, item in enumerate(owner.state.components[:25])]
         super().__init__(placeholder=placeholder, options=options or [discord.SelectOption(label="No components", value="-1")])
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -117,10 +105,7 @@ class BuilderPlusView(ui.LayoutView):
     def _component_summary(self) -> str:
         if not self.state.components:
             return f"*{emoji('WARNING')} Empty container — use **Add Component** to begin.*"
-        return "\n".join(
-            f"`{i:02}` {icon(item.type)} **{item.type.replace('_', ' ').title()}**" + ("" if item.enabled else " ~~disabled~~")
-            for i, item in enumerate(self.state.components, 1)
-        )
+        return "\n".join(f"`{i:02}` {icon(item.type)} **{item.type.replace('_', ' ').title()}**" + ("" if item.enabled else " ~~disabled~~") for i, item in enumerate(self.state.components, 1))
 
     def _build(self) -> None:
         self.clear_items()
@@ -128,15 +113,10 @@ class BuilderPlusView(ui.LayoutView):
         container = ui.Container(accent_color=discord.Colour(accent) if accent is not None else None)
         container.add_item(ui.TextDisplay(f"# {emoji('BUILDER')} HelzerX Container Builder **V2**\n-# Build Discord Components V2 layouts directly inside Discord."))
         container.add_item(ui.Separator())
-        container.add_item(ui.TextDisplay(
-            f"### {emoji('PREVIEW')} Live Preview\n**{self.state.name}** · Components **{self.state.component_count}/{self.state.MAX_COMPONENTS}** · Accent `{('#%06X' % accent) if accent is not None else 'None'}`"
-        ))
+        container.add_item(ui.TextDisplay(f"### {emoji('PREVIEW')} Live Preview\n**{self.state.name}** · Components **{self.state.component_count}/{self.state.MAX_COMPONENTS}** · Accent `{('#%06X' % accent) if accent is not None else 'None'}`"))
         container.add_item(ui.TextDisplay(self._component_summary()))
 
-        add = ui.Select(
-            placeholder=f"{emoji('ADD')} Add a component...",
-            options=[discord.SelectOption(label=d.label, value=d.key, description=d.description, emoji=icon(d.key)) for d in COMPONENTS],
-        )
+        add = ui.Select(placeholder=f"{emoji('ADD')} Add a component...", options=[discord.SelectOption(label=d.label, value=d.key, description=d.description, emoji=icon(d.key)) for d in COMPONENTS])
         async def add_callback(interaction: discord.Interaction) -> None:
             definition = component_def(add.values[0])
             if not self.state.add(ComponentSpec(definition.key, json.loads(json.dumps(definition.default)))):
@@ -152,11 +132,15 @@ class BuilderPlusView(ui.LayoutView):
             ui.Button(label="Duplicate", emoji=emoji("DUPLICATE"), style=discord.ButtonStyle.secondary, custom_id="hx:duplicate"),
             ui.Button(label="Remove", emoji=emoji("REMOVE"), style=discord.ButtonStyle.danger, custom_id="hx:remove"),
             ui.Button(label="Reorder", emoji=emoji("REORDER"), style=discord.ButtonStyle.secondary, custom_id="hx:reorder"),
-            ui.Button(label="More", emoji=emoji("SETTINGS"), style=discord.ButtonStyle.secondary, custom_id="hx:more"),
+            ui.Button(label="Send", emoji=emoji("SEND"), style=discord.ButtonStyle.success, custom_id="hx:send"),
         )
         for child in controls.children:
             child.callback = self._control
         container.add_item(controls)
+
+        more = ui.ActionRow(ui.Button(label="More Tools", emoji=emoji("SETTINGS"), style=discord.ButtonStyle.secondary, custom_id="hx:more"))
+        more.children[0].callback = self._control
+        container.add_item(more)
         self.add_item(container)
 
     async def _control(self, interaction: discord.Interaction) -> None:
@@ -180,6 +164,12 @@ class BuilderPlusView(ui.LayoutView):
             select.callback = move_callback
             view.add_item(ui.Container(ui.TextDisplay("### Reorder\nSelect an item to move it down one position."), ui.ActionRow(select)))
             await interaction.response.send_message(view=view, ephemeral=True)
+            return
+        if action == "send":
+            if not self.state.components:
+                await interaction.response.send_message(f"{emoji('WARNING')} Add at least one component before sending.", ephemeral=True)
+                return
+            await interaction.response.send_message(view=RenderedComponentsView(self.state))
             return
         if action == "more":
             await self.open_more(interaction)
