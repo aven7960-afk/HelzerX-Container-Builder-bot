@@ -1,9 +1,4 @@
-"""Centralized emoji registry.
-
-Keep emoji presentation out of commands/views so the UI can be restyled from
-one place. Custom Discord emoji strings can be supplied through environment
-variables later without touching the builder code.
-"""
+"""Centralized emoji registry for the HelzerX Discord UI."""
 
 from __future__ import annotations
 
@@ -12,12 +7,12 @@ import os
 
 class Emoji:
     # Brand / navigation
-    LOGO = "<:helzerx:>"
+    LOGO = "◆"
     BUILDER = "🧩"
     PREVIEW = "👁️"
     SETTINGS = "⚙️"
     SAVE = "💾"
-    JSON = "{ }"
+    JSON = "{}"
     BACK = "↩️"
     CLOSE = "✕"
 
@@ -48,7 +43,7 @@ class Emoji:
 
     @classmethod
     def from_env(cls, name: str, fallback: str) -> str:
-        """Return a custom emoji from env, or the built-in fallback."""
+        """Return a server custom emoji from env, or the Unicode fallback."""
         return os.getenv(f"EMOJI_{name.upper()}", fallback)
 
 
