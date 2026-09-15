@@ -1,29 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import copy
 import json
 from typing import Any
 
 
 @dataclass(slots=True)
 class ComponentSpec:
-    """Serializable description of one Components V2 item."""
-
     type: str
     data: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": self.type, "enabled": self.enabled, "data": self.data}
+        return {"type": self.type, "enabled": self.enabled, "data": copy.deepcopy(self.data)}
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ComponentSpec":
-        if not isinstance(raw, dict) or not isinstance(raw.get("type"), str):
-            raise ValueError("Each component must contain a string 'type'.")
+        if not isinstance(raw, dict) or not isinstance(raw.get("type"), str) or not raw["type"].strip():
+            raise ValueError("Each component must contain a non-empty string 'type'.")
         data = raw.get("data", {})
         if not isinstance(data, dict):
             raise ValueError("Component 'data' must be an object.")
-        return cls(type=raw["type"], data=dict(data), enabled=bool(raw.get("enabled", True)))
+        return cls(type=raw["type"].strip(), data=copy.deepcopy(data), enabled=bool(raw.get("enabled", True)))
 
 
 @dataclass(slots=True)
@@ -50,7 +49,7 @@ class BuilderState:
         if not 0 <= index < self.component_count or self.component_count >= self.MAX_COMPONENTS:
             return False
         original = self.components[index]
-        self.components.insert(index + 1, ComponentSpec(original.type, dict(original.data), original.enabled))
+        self.components.insert(index + 1, ComponentSpec(original.type, copy.deepcopy(original.data), original.enabled))
         return True
 
     def remove(self, index: int) -> bool:
@@ -60,9 +59,9 @@ class BuilderState:
         return True
 
     def update(self, index: int, data: dict[str, Any]) -> bool:
-        if not 0 <= index < self.component_count:
+        if not 0 <= index < self.component_count or not isinstance(data, dict):
             return False
-        self.components[index].data = dict(data)
+        self.components[index].data = copy.deepcopy(data)
         return True
 
     def toggle(self, index: int) -> bool:
@@ -82,12 +81,7 @@ class BuilderState:
         self.components.clear()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "version": self.version,
-            "name": self.name,
-            "accent_color": self.accent_color,
-            "components": [component.to_dict() for component in self.components],
-        }
+        return {"version": 2, "name": self.name[:100], "accent_color": self.accent_color, "components": [c.to_dict() for c in self.components]}
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
@@ -102,14 +96,7 @@ class BuilderState:
         accent = raw.get("accent_color", 0x5865F2)
         if accent is not None and (not isinstance(accent, int) or not 0 <= accent <= 0xFFFFFF):
             raise ValueError("accent_color must be a valid integer color.")
-        components = [ComponentSpec.from_dict(item) for item in raw_components]
-        return cls(
-            owner_id=owner_id,
-            accent_color=accent,
-            components=components,
-            name=str(raw.get("name", "Untitled Container"))[:100],
-            version=2,
-        )
+        return cls(owner_id=owner_id, accent_color=accent, components=[ComponentSpec.from_dict(x) for x in raw_components], name=str(raw.get("name", "Untitled Container"))[:100], version=2)
 
     @classmethod
     def from_json(cls, owner_id: int, raw: str) -> "BuilderState":
