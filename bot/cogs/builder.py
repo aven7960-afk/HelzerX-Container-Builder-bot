@@ -15,13 +15,20 @@ class BuilderCog(commands.Cog):
         self.bot = bot
         self.settings = settings
 
-    @app_commands.command(name="builder", description="Open the HelzerX Components V2 builder")
-    async def builder(self, interaction: discord.Interaction) -> None:
+    async def open_builder(self, interaction: discord.Interaction) -> None:
         view = BuilderPlusView(
             owner_id=interaction.user.id,
             accent_color=self.settings.default_accent_color,
         )
         await interaction.response.send_message(view=view)
+
+    @app_commands.command(name="container", description="Open the HelzerX Components V2 Container Builder")
+    async def container(self, interaction: discord.Interaction) -> None:
+        await self.open_builder(interaction)
+
+    @app_commands.command(name="builder", description="Open the HelzerX Components V2 builder")
+    async def builder(self, interaction: discord.Interaction) -> None:
+        await self.open_builder(interaction)
 
 
 async def setup(bot: commands.Bot, settings: Settings) -> None:
