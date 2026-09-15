@@ -7,7 +7,7 @@ from discord.ext import commands
 
 from bot.cogs.builder import setup as setup_builder
 from bot.config import Settings
-from bot.views.builder_plus import BuilderPlusView
+from bot.views.builder_plus_fixed import BuilderPlusView
 
 log = logging.getLogger("helzerx")
 
@@ -36,8 +36,6 @@ class HelzerXBot(commands.Bot):
         if message.author.bot:
             return
 
-        # Prefix-free trigger plus arbitrary prefix support:
-        # `container`, `!container`, `.container`, `hxcontainer`, etc.
         first = message.content.strip().split(maxsplit=1)[0].lower() if message.content.strip() else ""
         if first == "container" or first.endswith("container"):
             view = BuilderPlusView(
