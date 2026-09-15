@@ -71,7 +71,6 @@ class ComponentEditor(ui.Modal):
             self._field("label", "Button label", str(data.get("label", "Open")), False)
             self._field("style", "Button style", str(data.get("style", "primary")), False)
             self._field("url", "Accessory URL", str(data.get("url", "")), False)
-            self._field("custom_id", "Button custom ID", str(data.get("custom_id", "helzerx:section")), False)
         elif spec.type == "file":
             self._field("url", "Attachment URL", str(data.get("url", "attachment://file.txt")), False)
         else:
@@ -95,8 +94,7 @@ class ComponentEditor(ui.Modal):
 
     def _parse(self, v: dict[str, str]) -> dict:
         t = self.spec.type
-        if t == "text":
-            return {"content": v["content"][:4000]}
+        if t == "text": return {"content": v["content"][:4000]}
         if t == "button":
             style = v["style"].lower().strip()
             if style not in {"primary", "secondary", "success", "danger", "link"}: raise ValueError("Invalid button style.")
@@ -123,7 +121,7 @@ class ComponentEditor(ui.Modal):
         if t == "section":
             accessory = v["accessory"].lower().strip()
             if accessory not in {"button", "thumbnail"}: raise ValueError("Accessory must be button or thumbnail.")
-            return {"content": v["content"][:4000], "accessory": accessory, "label": v["label"][:80], "style": v["style"].lower(), "url": v["url"][:1000], "custom_id": v["custom_id"][:100]}
+            return {"content": v["content"][:4000], "accessory": accessory, "label": v["label"][:80], "style": v["style"].lower(), "url": v["url"][:1000], "custom_id": "helzerx:section"}
         if t == "file": return {"url": v["url"][:1000]}
         data = json.loads(v["data"])
         if not isinstance(data, dict): raise ValueError("Component data must be a JSON object.")
@@ -139,14 +137,11 @@ class IndexSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         index = int(self.values[0])
-        if index < 0:
-            await interaction.response.send_message("There are no components yet.", ephemeral=True); return
-        if self.action_name == "edit":
-            await interaction.response.send_modal(ComponentEditor(self.owner, index)); return
+        if index < 0: await interaction.response.send_message("There are no components yet.", ephemeral=True); return
+        if self.action_name == "edit": await interaction.response.send_modal(ComponentEditor(self.owner, index)); return
         if self.action_name == "remove": self.owner.state.remove(index)
         elif self.action_name == "duplicate":
-            if not self.owner.state.duplicate(index):
-                await interaction.response.send_message(f"{emoji('ERROR')} Component limit reached (40).", ephemeral=True); return
+            if not self.owner.state.duplicate(index): await interaction.response.send_message(f"{emoji('ERROR')} Component limit reached (40).", ephemeral=True); return
         elif self.action_name == "toggle": self.owner.state.toggle(index)
         self.owner._build(); await interaction.response.edit_message(view=self.owner)
 
@@ -157,8 +152,7 @@ class BuilderPlusView(ui.LayoutView):
         self.owner_id = owner_id; self.state = BuilderState(owner_id=owner_id, accent_color=accent_color); self.store = store or TemplateStore(); self._build()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(f"{emoji('ERROR')} This builder belongs to another user.", ephemeral=True); return False
+        if interaction.user.id != self.owner_id: await interaction.response.send_message(f"{emoji('ERROR')} This builder belongs to another user.", ephemeral=True); return False
         return True
 
     def _component_summary(self) -> str:
@@ -166,46 +160,43 @@ class BuilderPlusView(ui.LayoutView):
         return "\n".join(f"`{i:02}` {icon(item.type)} **{item.type.replace('_',' ').title()}**" + ("" if item.enabled else " ~~disabled~~") for i,item in enumerate(self.state.components,1))[:3900]
 
     def _build(self) -> None:
-        self.clear_items(); accent = self.state.accent_color
-        container = ui.Container(accent_color=discord.Colour(accent) if accent is not None else None)
+        self.clear_items(); accent=self.state.accent_color; container=ui.Container(accent_color=discord.Colour(accent) if accent is not None else None)
         container.add_item(ui.TextDisplay(f"# {emoji('BUILDER')} HelzerX Container Builder **V2**\n-# Build Discord Components V2 layouts directly inside Discord."))
-        container.add_item(ui.Separator())
-        container.add_item(ui.TextDisplay(f"### {emoji('PREVIEW')} Live Preview\n**{self.state.name}** · Components **{self.state.component_count}/{self.state.MAX_COMPONENTS}** · Accent `{('#%06X'%accent) if accent is not None else 'None'}`"))
-        container.add_item(ui.TextDisplay(self._component_summary()))
-        add = ui.Select(placeholder=f"{emoji('ADD')} Add a component...", options=[discord.SelectOption(label=d.label,value=d.key,description=d.description,emoji=icon(d.key)) for d in COMPONENTS])
-        async def add_callback(interaction: discord.Interaction) -> None:
-            d = component_def(add.values[0])
-            if not self.state.add(ComponentSpec(d.key, copy.deepcopy(d.default))): await interaction.response.send_message(f"{emoji('ERROR')} Component limit reached (40).",ephemeral=True); return
+        container.add_item(ui.Separator()); container.add_item(ui.TextDisplay(f"### {emoji('PREVIEW')} Live Preview\n**{self.state.name}** · Components **{self.state.component_count}/{self.state.MAX_COMPONENTS}** · Accent `{('#%06X'%accent) if accent is not None else 'None'}`")); container.add_item(ui.TextDisplay(self._component_summary()))
+        add=ui.Select(placeholder=f"{emoji('ADD')} Add a component...",options=[discord.SelectOption(label=d.label,value=d.key,description=d.description,emoji=icon(d.key)) for d in COMPONENTS])
+        async def add_callback(interaction:discord.Interaction)->None:
+            d=component_def(add.values[0])
+            if not self.state.add(ComponentSpec(d.key,copy.deepcopy(d.default))): await interaction.response.send_message(f"{emoji('ERROR')} Component limit reached (40).",ephemeral=True); return
             self._build(); await interaction.response.edit_message(view=self)
-        add.callback = add_callback; container.add_item(ui.ActionRow(add))
-        controls = ui.ActionRow(ui.Button(label="Edit",emoji=emoji("EDIT"),style=discord.ButtonStyle.secondary,custom_id="hx:edit"),ui.Button(label="Duplicate",emoji=emoji("DUPLICATE"),style=discord.ButtonStyle.secondary,custom_id="hx:duplicate"),ui.Button(label="Remove",emoji=emoji("REMOVE"),style=discord.ButtonStyle.danger,custom_id="hx:remove"),ui.Button(label="Reorder",emoji=emoji("REORDER"),style=discord.ButtonStyle.secondary,custom_id="hx:reorder"),ui.Button(label="Send",emoji=emoji("SEND"),style=discord.ButtonStyle.success,custom_id="hx:send"))
-        for child in controls.children: child.callback = self._control
+        add.callback=add_callback; container.add_item(ui.ActionRow(add))
+        controls=ui.ActionRow(ui.Button(label="Edit",emoji=emoji("EDIT"),style=discord.ButtonStyle.secondary,custom_id="hx:edit"),ui.Button(label="Duplicate",emoji=emoji("DUPLICATE"),style=discord.ButtonStyle.secondary,custom_id="hx:duplicate"),ui.Button(label="Remove",emoji=emoji("REMOVE"),style=discord.ButtonStyle.danger,custom_id="hx:remove"),ui.Button(label="Reorder",emoji=emoji("REORDER"),style=discord.ButtonStyle.secondary,custom_id="hx:reorder"),ui.Button(label="Send",emoji=emoji("SEND"),style=discord.ButtonStyle.success,custom_id="hx:send"))
+        for child in controls.children: child.callback=self._control
         container.add_item(controls)
-        more = ui.ActionRow(ui.Button(label="More Tools",emoji=emoji("SETTINGS"),style=discord.ButtonStyle.secondary,custom_id="hx:more")); more.children[0].callback=self._control; container.add_item(more); self.add_item(container)
+        tools=ui.ActionRow(ui.Button(label="Toggle",emoji=emoji("EDIT"),style=discord.ButtonStyle.secondary,custom_id="hx:toggle"),ui.Button(label="More Tools",emoji=emoji("SETTINGS"),style=discord.ButtonStyle.secondary,custom_id="hx:more"))
+        for child in tools.children: child.callback=self._control
+        container.add_item(tools); self.add_item(container)
 
-    async def _component_picker(self, interaction: discord.Interaction, action: str) -> None:
+    async def _component_picker(self,interaction:discord.Interaction,action:str)->None:
         if not self.state.components: await interaction.response.send_message(f"{emoji('WARNING')} No components yet.",ephemeral=True); return
         picker=IndexSelect(self,action,f"Choose component to {action}"); view=ui.LayoutView(timeout=120); view.add_item(ui.Container(ui.TextDisplay(f"### {action.title()} Component"),ui.ActionRow(picker))); await interaction.response.send_message(view=view,ephemeral=True)
 
-    async def _control(self, interaction: discord.Interaction) -> None:
+    async def _control(self,interaction:discord.Interaction)->None:
         action=str(interaction.data.get("custom_id","")).split(":")[-1]
         if action in {"edit","duplicate","remove","toggle"}: await self._component_picker(interaction,action); return
-        if action == "reorder":
+        if action=="reorder":
             if not self.state.components: await interaction.response.send_message(f"{emoji('WARNING')} No components yet.",ephemeral=True); return
-            select=ui.Select(placeholder="Choose component",options=[discord.SelectOption(label=f"#{i+1} {x.type.replace('_',' ').title()}",value=str(i)) for i,x in enumerate(self.state.components[:25])])
-            mode=ui.Select(placeholder="Choose move",options=[discord.SelectOption(label="Move up",value="up"),discord.SelectOption(label="Move down",value="down"),discord.SelectOption(label="Move to top",value="top"),discord.SelectOption(label="Move to bottom",value="bottom")])
-            async def go(i: discord.Interaction) -> None:
-                idx,direction=int(select.values[0]),mode.values[0]
-                delta={"up":-1,"down":1,"top":-idx,"bottom":len(self.state.components)-1-idx}[direction]
+            select=ui.Select(placeholder="Choose component",options=[discord.SelectOption(label=f"#{i+1} {x.type.replace('_',' ').title()}",value=str(i)) for i,x in enumerate(self.state.components[:25])]); mode=ui.Select(placeholder="Choose move",options=[discord.SelectOption(label="Move up",value="up"),discord.SelectOption(label="Move down",value="down"),discord.SelectOption(label="Move to top",value="top"),discord.SelectOption(label="Move to bottom",value="bottom")])
+            async def go(i:discord.Interaction)->None:
+                idx,direction=int(select.values[0]),mode.values[0]; delta={"up":-1,"down":1,"top":-idx,"bottom":len(self.state.components)-1-idx}[direction]
                 if not self.state.move(idx,delta): await i.response.send_message(f"{emoji('WARNING')} That move is not possible.",ephemeral=True); return
                 self._build(); await i.response.edit_message(view=self)
             select.callback=go; mode.callback=go; view=ui.LayoutView(timeout=120); view.add_item(ui.Container(ui.TextDisplay("### Reorder Components"),ui.ActionRow(select),ui.ActionRow(mode))); await interaction.response.send_message(view=view,ephemeral=True); return
-        if action == "send":
+        if action=="send":
             if not self.state.components: await interaction.response.send_message(f"{emoji('WARNING')} Add at least one component before sending.",ephemeral=True); return
             await interaction.response.send_message(view=RenderedComponentsView(self.state)); return
-        if action == "more": await self.open_more(interaction)
+        if action=="more": await self.open_more(interaction)
 
-    async def open_more(self, interaction: discord.Interaction) -> None: await interaction.response.send_message(view=MoreView(self),ephemeral=True)
+    async def open_more(self,interaction:discord.Interaction)->None: await interaction.response.send_message(view=MoreView(self),ephemeral=True)
 
 
 class MoreView(ui.LayoutView):
