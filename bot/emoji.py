@@ -7,30 +7,31 @@ import os
 
 class Emoji:
     # Brand / navigation
-    LOGO = "◆"
+    LOGO = "🔷"
     BUILDER = "🧩"
     PREVIEW = "👁️"
     SETTINGS = "⚙️"
     SAVE = "💾"
-    JSON = "{}"
+    JSON = "📄"
     BACK = "↩️"
-    CLOSE = "✕"
+    CLOSE = "❌"
 
     # Components
     CONTAINER = "📦"
     TEXT = "📝"
-    SECTION = "▤"
+    SECTION = "📋"
     SEPARATOR = "➖"
     MEDIA = "🖼️"
     THUMBNAIL = "🏷️"
     BUTTON = "🔘"
     SELECT = "🔽"
-    ACTION_ROW = "▰"
+    ACTION_ROW = "🔲"
     FILE = "📎"
 
     # Actions / status
-    ADD = "＋"
+    ADD = "➕"
     EDIT = "✏️"
+    DUPLICATE = "📑"
     REMOVE = "🗑️"
     REORDER = "↕️"
     COLOR = "🎨"
