@@ -8,9 +8,11 @@ import discord
 from discord import ui
 
 from bot.builder.catalog import COMPONENTS, component_def
-from bot.builder.renderer import RenderedComponentsView, render_component
+from bot.builder.renderer import RenderedComponentsView, build_container
 from bot.builder.state import BuilderState, ComponentSpec
 from bot.storage import TemplateStore
+
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
 class TextModal(ui.Modal):
@@ -46,6 +48,62 @@ class JsonModal(ui.Modal):
         await self._callback(interaction, str(self.payload.value))
 
 
+class MediaUploadModal(ui.Modal):
+    """Upload up to 10 media files directly from Discord, capped at 20 MiB each."""
+
+    def __init__(self, owner: "BuilderPlusView", index: int):
+        super().__init__(title="Upload Media")
+        self.owner = owner
+        self.index = index
+        self.upload = ui.FileUpload(
+            custom_id=f"hx_media_{owner.owner_id}_{index}",
+            min_values=1,
+            max_values=10,
+            required=True,
+        )
+        self.description = ui.TextInput(
+            label="Description (optional)",
+            required=False,
+            max_length=256,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(ui.Label(text="Image / Video / File", component=self.upload))
+        self.add_item(ui.Label(text="Description", component=self.description))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        files = list(self.upload.values)
+        if not files:
+            await interaction.response.send_message("Choose at least one file.", ephemeral=True)
+            return
+
+        oversized = [f.filename for f in files if int(f.size or 0) > MAX_UPLOAD_BYTES]
+        if oversized:
+            names = ", ".join(f"`{name}`" for name in oversized[:5])
+            await interaction.response.send_message(
+                f"Each upload must be 20 MB or smaller. Too large: {names}",
+                ephemeral=True,
+            )
+            return
+
+        items = []
+        description = str(self.description.value or "")[:256]
+        for attachment in files[:10]:
+            items.append(
+                {
+                    "url": attachment.url,
+                    "filename": attachment.filename[:255],
+                    "content_type": str(attachment.content_type or ""),
+                    "size": int(attachment.size or 0),
+                    "description": description,
+                    "spoiler": bool(attachment.filename.startswith("SPOILER_")),
+                }
+            )
+
+        self.owner.state.update(self.index, {"items": items})
+        self.owner._build()
+        await interaction.response.edit_message(view=self.owner)
+
+
 class ComponentEditor(ui.Modal):
     def __init__(self, owner: "BuilderPlusView", index: int):
         spec = owner.state.components[index]
@@ -77,7 +135,15 @@ class ComponentEditor(ui.Modal):
             self._field("custom_id", "Custom ID", str(data.get("custom_id", "helzerx:select")), False)
             self._field("options", "Options: Label | Value | Description", options, True)
         elif spec.type == "media":
-            self._field("items", "Media URLs, one per line (max 10)", "\n".join(data.get("items", [])), True)
+            self._field(
+                "urls",
+                "Media URLs (optional)",
+                "\n".join(
+                    str(item.get("url", "")) if isinstance(item, dict) else str(item)
+                    for item in data.get("items", [])
+                ),
+                True,
+            )
         elif spec.type == "thumbnail":
             self._field("url", "Image URL", str(data.get("url", "")), False)
             self._field("description", "Description", str(data.get("description", "")), False)
@@ -93,6 +159,8 @@ class ComponentEditor(ui.Modal):
         elif spec.type in {"user_select", "role_select", "mentionable_select", "channel_select"}:
             self._field("placeholder", "Placeholder", str(data.get("placeholder", "Select...")), False)
             self._field("custom_id", "Custom ID", str(data.get("custom_id", f"helzerx:{spec.type}")), False)
+            self._field("min_values", "Minimum values", str(data.get("min_values", 1)), False)
+            self._field("max_values", "Maximum values", str(data.get("max_values", 1)), False)
         elif spec.type == "file":
             self._field("url", "Attachment URL", str(data.get("url", "attachment://file.txt")), False)
             self._field("spoiler", "Spoiler: true/false", str(data.get("spoiler", False)), False)
@@ -106,7 +174,7 @@ class ComponentEditor(ui.Modal):
             required=False,
             style=discord.TextStyle.paragraph if paragraph else discord.TextStyle.short,
         )
-        self.add_item(field)
+        self.add_item(ui.Label(text=label[:45], component=field))
         self.fields.append((key, field))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -135,11 +203,15 @@ class ComponentEditor(ui.Modal):
                 raise ValueError("Invalid button style.")
             if style == "link" and not values["url"].strip():
                 raise ValueError("Link buttons require a URL.")
+            if style != "link" and values["url"].strip():
+                url = ""
+            else:
+                url = values["url"][:1000]
             return {
                 "label": values["label"][:80] or "Button",
                 "style": style,
                 "custom_id": values["custom_id"][:100] or "helzerx:button",
-                "url": values["url"][:1000],
+                "url": url,
                 "disabled": values["disabled"].lower() in {"true", "1", "yes"},
             }
 
@@ -148,11 +220,13 @@ class ComponentEditor(ui.Modal):
             for line in values["options"].splitlines()[:25]:
                 parts = [x.strip() for x in line.split("|", 2)]
                 if len(parts) >= 2 and parts[0] and parts[1]:
-                    options.append({
-                        "label": parts[0][:100],
-                        "value": parts[1][:100],
-                        "description": parts[2][:100] if len(parts) == 3 else "",
-                    })
+                    options.append(
+                        {
+                            "label": parts[0][:100],
+                            "value": parts[1][:100],
+                            "description": parts[2][:100] if len(parts) == 3 else "",
+                        }
+                    )
             if not options:
                 raise ValueError("Add at least one select option.")
             return {
@@ -162,10 +236,10 @@ class ComponentEditor(ui.Modal):
             }
 
         if t == "media":
-            items = [x.strip() for x in values["items"].splitlines() if x.strip()][:10]
-            if not items:
-                raise ValueError("Add at least one media URL.")
-            return {"items": items}
+            urls = [x.strip() for x in values["urls"].splitlines() if x.strip()][:10]
+            if not urls:
+                raise ValueError("Use the media upload action to add files.")
+            return {"items": [{"url": url, "description": "", "spoiler": False} for url in urls]}
 
         if t == "thumbnail":
             if not values["url"].strip():
@@ -176,12 +250,17 @@ class ComponentEditor(ui.Modal):
             spacing = values["spacing"].lower().strip()
             if spacing not in {"small", "large"}:
                 raise ValueError("Spacing must be small or large.")
-            return {"visible": values["visible"].lower() not in {"false", "0", "no"}, "spacing": spacing}
+            return {
+                "visible": values["visible"].lower() not in {"false", "0", "no"},
+                "spacing": spacing,
+            }
 
         if t == "section":
             accessory = values["accessory"].lower().strip()
             if accessory not in {"button", "thumbnail"}:
                 raise ValueError("Accessory must be button or thumbnail.")
+            if accessory == "button" and values["style"].lower().strip() not in {"primary", "secondary", "success", "danger", "link"}:
+                raise ValueError("Invalid button style.")
             return {
                 "content": values["content"][:4000],
                 "accessory": accessory,
@@ -192,9 +271,13 @@ class ComponentEditor(ui.Modal):
             }
 
         if t in {"user_select", "role_select", "mentionable_select", "channel_select"}:
+            minimum = max(0, min(int(values["min_values"] or 1), 25))
+            maximum = max(minimum, min(int(values["max_values"] or 1), 25))
             return {
                 "placeholder": values["placeholder"][:150] or "Select...",
                 "custom_id": values["custom_id"][:100] or f"helzerx:{t}",
+                "min_values": minimum,
+                "max_values": maximum,
             }
 
         if t == "file":
@@ -224,7 +307,10 @@ class ComponentPicker(ui.Select):
                     description=detail[:100],
                 )
             )
-        super().__init__(placeholder="Select a component to edit...", options=options or [discord.SelectOption(label="No components", value="-1")])
+        super().__init__(
+            placeholder="Select a component...",
+            options=options or [discord.SelectOption(label="No components", value="-1")],
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         index = int(self.values[0])
@@ -232,7 +318,10 @@ class ComponentPicker(ui.Select):
             await interaction.response.send_message("There are no components yet.", ephemeral=True)
             return
         if self.action == "edit":
-            await interaction.response.send_modal(ComponentEditor(self.owner, index))
+            if self.owner.state.components[index].type == "media":
+                await interaction.response.send_modal(MediaUploadModal(self.owner, index))
+            else:
+                await interaction.response.send_modal(ComponentEditor(self.owner, index))
             return
         if self.action == "remove":
             self.owner.state.remove(index)
@@ -247,7 +336,7 @@ class ComponentPicker(ui.Select):
 
 
 class BuilderPlusView(ui.LayoutView):
-    """Clean Components V2 builder. Editing a component opens its editor immediately."""
+    """HelzerX Components V2 builder with a true message preview."""
 
     def __init__(self, owner_id: int, accent_color: int | None = None, store: TemplateStore | None = None):
         super().__init__(timeout=900)
@@ -262,51 +351,23 @@ class BuilderPlusView(ui.LayoutView):
             return False
         return True
 
-    def _preview_lines(self) -> list[str]:
-        lines: list[str] = []
-        for index, spec in enumerate(self.state.components[:8], 1):
-            if not spec.enabled:
-                lines.append(f"{index}. {spec.type.replace('_', ' ').title()} — disabled")
-                continue
-            if spec.type == "text":
-                text = str(spec.data.get("content", "")).replace("\n", " ").strip()
-                lines.append(f"{index}. {text[:140] or 'Text Display'}")
-            elif spec.type == "button":
-                lines.append(f"{index}. Button — {spec.data.get('label', 'Button')}")
-            elif spec.type == "section":
-                text = str(spec.data.get("content", "Section")).replace("\n", " ").strip()
-                lines.append(f"{index}. Section — {text[:120]}")
-            else:
-                lines.append(f"{index}. {spec.type.replace('_', ' ').title()}")
-        if len(self.state.components) > 8:
-            lines.append(f"… and {len(self.state.components) - 8} more")
-        return lines
-
-    def _build_preview(self) -> ui.Container:
-        preview = ui.Container()
-        preview.add_item(ui.TextDisplay("### Live Preview"))
-        if not self.state.components:
-            preview.add_item(ui.TextDisplay("Your container is empty. Add a component to start building."))
-            return preview
-
-        preview.add_item(ui.TextDisplay(f"**{self.state.name}**\n" + "\n".join(self._preview_lines())[:3900]))
-        return preview
-
     def _build(self) -> None:
         self.clear_items()
 
-        header = ui.Container()
-        header.add_item(ui.TextDisplay("# HelzerX Studio\n## Container Builder"))
-        header.add_item(ui.TextDisplay(
-            f"Build Components V2 layouts directly in Discord.\n"
-            f"{self.state.component_count} / {self.state.MAX_COMPONENTS} components · {self.state.name}"
-        ))
-        self.add_item(header)
+        preview_header = ui.Container()
+        preview_header.add_item(ui.TextDisplay("### Live Preview"))
+        self.add_item(preview_header)
 
-        self.add_item(self._build_preview())
+        # This is the same container structure that gets sent to the target channel.
+        self.add_item(build_container(self.state, interactive=False, show_name=True, accent=False))
 
         editor = ui.Container()
-        editor.add_item(ui.TextDisplay("### Components"))
+        editor.add_item(ui.TextDisplay("### Container Builder"))
+        editor.add_item(
+            ui.TextDisplay(
+                f"{self.state.component_count} / {self.state.MAX_COMPONENTS} components · {self.state.name}"
+            )
+        )
 
         add = ui.Select(
             placeholder="Add a component...",
@@ -322,8 +383,11 @@ class BuilderPlusView(ui.LayoutView):
             if not self.state.add(spec):
                 await interaction.response.send_message("Component limit reached.", ephemeral=True)
                 return
-            # The newly-created component opens its editor immediately.
-            await interaction.response.send_modal(ComponentEditor(self, self.state.component_count - 1))
+            if definition.key == "media":
+                await interaction.response.send_modal(MediaUploadModal(self, self.state.component_count - 1))
+            else:
+                # Text Display and every other editable component open immediately after creation.
+                await interaction.response.send_modal(ComponentEditor(self, self.state.component_count - 1))
 
         add.callback = add_callback
         editor.add_item(ui.ActionRow(add))
@@ -331,9 +395,13 @@ class BuilderPlusView(ui.LayoutView):
         if self.state.components:
             picker = ComponentPicker(self, "edit")
             editor.add_item(ui.ActionRow(picker))
-            editor.add_item(ui.TextDisplay("Select any component above to edit it. Text Display opens directly in the text editor."))
+            editor.add_item(
+                ui.TextDisplay(
+                    "Select a component to edit it. Selecting a Text Display opens its text editor immediately."
+                )
+            )
         else:
-            editor.add_item(ui.TextDisplay("Add your first component. Its editor will open immediately."))
+            editor.add_item(ui.TextDisplay("Add a component. Its editor opens immediately."))
 
         self.add_item(editor)
 
@@ -377,67 +445,130 @@ class BuilderPlusView(ui.LayoutView):
             return
 
         if action == "reorder":
-            if not self.state.components:
-                await interaction.response.send_message("There are no components yet.", ephemeral=True)
-                return
-            select = discord.ui.Select(
-                placeholder="Select component...",
-                options=[
-                    discord.SelectOption(label=f"{i + 1}. {x.type.replace('_', ' ').title()}", value=str(i))
-                    for i, x in enumerate(self.state.components[:25])
-                ],
-            )
-            mode = discord.ui.Select(
-                placeholder="Choose movement...",
-                options=[
-                    discord.SelectOption(label="Move up", value="up"),
-                    discord.SelectOption(label="Move down", value="down"),
-                    discord.SelectOption(label="Move to top", value="top"),
-                    discord.SelectOption(label="Move to bottom", value="bottom"),
-                ],
-            )
-
-            async def reorder_callback(i: discord.Interaction) -> None:
-                if not select.values or not mode.values:
-                    await i.response.send_message("Choose a component and a movement.", ephemeral=True)
-                    return
-                index = int(select.values[0])
-                direction = mode.values[0]
-                delta = {
-                    "up": -1,
-                    "down": 1,
-                    "top": -index,
-                    "bottom": len(self.state.components) - 1 - index,
-                }[direction]
-                if not self.state.move(index, delta):
-                    await i.response.send_message("That move is not possible.", ephemeral=True)
-                    return
-                self._build()
-                await i.response.edit_message(view=self)
-
-            select.callback = reorder_callback
-            mode.callback = reorder_callback
-            view = ui.LayoutView(timeout=120)
-            box = ui.Container()
-            box.add_item(ui.TextDisplay("### Reorder Components"))
-            box.add_item(ui.ActionRow(select))
-            box.add_item(ui.ActionRow(mode))
-            view.add_item(box)
-            await interaction.response.send_message(view=view, ephemeral=True)
+            await self._reorder(interaction)
             return
 
         if action == "send":
-            if not self.state.components:
-                await interaction.response.send_message("Add at least one component before sending.", ephemeral=True)
-                return
-            await interaction.response.send_message(view=RenderedComponentsView(self.state))
+            await self._send_picker(interaction)
             return
 
         if action == "more":
-            await self.open_more(interaction)
+            await interaction.response.send_message(view=MoreView(self), ephemeral=True)
 
-    async def open_more(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(view=MoreView(self), ephemeral=True)
+    async def _reorder(self, interaction: discord.Interaction) -> None:
+        if not self.state.components:
+            await interaction.response.send_message("There are no components yet.", ephemeral=True)
+            return
+        select = discord.ui.Select(
+            placeholder="Select component...",
+            options=[
+                discord.SelectOption(
+                    label=f"{i + 1}. {x.type.replace('_', ' ').title()}",
+                    value=str(i),
+                )
+                for i, x in enumerate(self.state.components[:25])
+            ],
+        )
+        mode = discord.ui.Select(
+            placeholder="Choose movement...",
+            options=[
+                discord.SelectOption(label="Move up", value="up"),
+                discord.SelectOption(label="Move down", value="down"),
+                discord.SelectOption(label="Move to top", value="top"),
+                discord.SelectOption(label="Move to bottom", value="bottom"),
+            ],
+        )
+
+        async def reorder_callback(i: discord.Interaction) -> None:
+            if not select.values or not mode.values:
+                await i.response.send_message("Choose a component and a movement.", ephemeral=True)
+                return
+            index = int(select.values[0])
+            direction = mode.values[0]
+            target = {
+                "up": index - 1,
+                "down": index + 1,
+                "top": 0,
+                "bottom": len(self.state.components) - 1,
+            }[direction]
+            if not self.state.move(index, target - index):
+                await i.response.send_message("That move is not possible.", ephemeral=True)
+                return
+            self._build()
+            await i.response.edit_message(view=self)
+
+        select.callback = reorder_callback
+        mode.callback = reorder_callback
+        view = ui.LayoutView(timeout=120)
+        box = ui.Container()
+        box.add_item(ui.TextDisplay("### Reorder Components"))
+        box.add_item(ui.ActionRow(select))
+        box.add_item(ui.ActionRow(mode))
+        view.add_item(box)
+        await interaction.response.send_message(view=view, ephemeral=True)
+
+    async def _send_picker(self, interaction: discord.Interaction) -> None:
+        if not self.state.components:
+            await interaction.response.send_message("Add at least one component before sending.", ephemeral=True)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message("Sending requires a server channel.", ephemeral=True)
+            return
+
+        picker = ui.ChannelSelect(
+            custom_id="hx_send_channel",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            placeholder="Select a channel to send to...",
+            min_values=1,
+            max_values=1,
+        )
+
+        async def channel_callback(i: discord.Interaction) -> None:
+            selected = picker.values[0]
+            target = i.client.get_channel(selected.id)
+            if target is None:
+                try:
+                    target = await i.client.fetch_channel(selected.id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    await i.response.send_message("I cannot access that channel.", ephemeral=True)
+                    return
+
+            if not hasattr(target, "send"):
+                await i.response.send_message("That channel cannot receive messages.", ephemeral=True)
+                return
+
+            try:
+                await target.send(view=RenderedComponentsView(self.state, interactive=True))
+            except discord.Forbidden:
+                await i.response.send_message(
+                    "I do not have permission to send messages in that channel.",
+                    ephemeral=True,
+                )
+                return
+            except discord.HTTPException as exc:
+                await i.response.send_message(
+                    f"Discord rejected the Components V2 message: `{exc}`",
+                    ephemeral=True,
+                )
+                return
+
+            await i.response.edit_message(view=SendDoneView(target))
+
+        picker.callback = channel_callback
+        view = ui.LayoutView(timeout=120)
+        box = ui.Container()
+        box.add_item(ui.TextDisplay("### Send Container\nChoose the destination channel."))
+        box.add_item(ui.ActionRow(picker))
+        view.add_item(box)
+        await interaction.response.send_message(view=view, ephemeral=True)
+
+
+class SendDoneView(ui.LayoutView):
+    def __init__(self, channel):
+        super().__init__(timeout=60)
+        box = ui.Container()
+        box.add_item(ui.TextDisplay(f"Sent successfully to {channel.mention}."))
+        self.add_item(box)
 
 
 class MoreView(ui.LayoutView):
@@ -492,12 +623,22 @@ class MoreView(ui.LayoutView):
                     b.state.accent_color = color
                 b._build()
                 await i.response.edit_message(view=b)
-            await interaction.response.send_modal(TextModal("Accent Color", "Hex color", f"#{b.state.accent_color:06X}" if b.state.accent_color is not None else "none", save_color))
+            await interaction.response.send_modal(
+                TextModal(
+                    "Accent Color",
+                    "Hex color",
+                    f"#{b.state.accent_color:06X}" if b.state.accent_color is not None else "none",
+                    save_color,
+                )
+            )
             return
 
         if action == "export":
             payload = b.state.to_json().encode("utf-8")
-            await interaction.response.send_message(file=discord.File(io.BytesIO(payload), filename="helzerx-container.json"), ephemeral=True)
+            await interaction.response.send_message(
+                file=discord.File(io.BytesIO(payload), filename="helzerx-container.json"),
+                ephemeral=True,
+            )
             return
 
         if action == "import":
@@ -528,7 +669,11 @@ class MoreView(ui.LayoutView):
             if not names:
                 await interaction.response.send_message("You have no saved templates.", ephemeral=True)
                 return
-            picker = ui.Select(placeholder="Select a template...", options=[discord.SelectOption(label=name[:100], value=name) for name in names[:25]])
+            picker = ui.Select(
+                placeholder="Select a template...",
+                options=[discord.SelectOption(label=name[:100], value=name) for name in names[:25]],
+            )
+
             async def load_callback(i: discord.Interaction) -> None:
                 state = b.store.load(b.owner_id, picker.values[0])
                 if state is None:
@@ -537,6 +682,7 @@ class MoreView(ui.LayoutView):
                 b.state = state
                 b._build()
                 await i.response.edit_message(view=b)
+
             picker.callback = load_callback
             view = ui.LayoutView(timeout=120)
             box = ui.Container()
@@ -551,11 +697,16 @@ class MoreView(ui.LayoutView):
             if not names:
                 await interaction.response.send_message("You have no saved templates.", ephemeral=True)
                 return
-            picker = ui.Select(placeholder="Select a template to delete...", options=[discord.SelectOption(label=name[:100], value=name) for name in names[:25]])
+            picker = ui.Select(
+                placeholder="Select a template to delete...",
+                options=[discord.SelectOption(label=name[:100], value=name) for name in names[:25]],
+            )
+
             async def delete_callback(i: discord.Interaction) -> None:
                 name = picker.values[0]
                 b.store.delete(b.owner_id, name)
                 await i.response.send_message(f"Template `{name}` deleted.", ephemeral=True)
+
             picker.callback = delete_callback
             view = ui.LayoutView(timeout=120)
             box = ui.Container()
