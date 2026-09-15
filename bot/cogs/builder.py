@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Settings
-from bot.views.builder_plus import BuilderPlusView
+from bot.views.builder_plus_fixed import BuilderPlusView
 
 
 class BuilderCog(commands.Cog):
